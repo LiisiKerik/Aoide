@@ -9,4 +9,5 @@ module Main (main) where
       callCommand "cabal check"
       callCommand "cabal new-build"
       callCommand "cabal new-haddock"
+      callCommand "cabal new-sdist"
 --------------------------------------------------------------------------------------------------------------------------------

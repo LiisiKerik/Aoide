@@ -25,3 +25,6 @@ library
   default-language: Haskell2010
   exposed-modules: Composition.Lilypond, Composition.Midi, Composition.Notes, Composition.Theory
   other-extensions: DeriveLift, NegativeLiterals, StandaloneDeriving, TemplateHaskell
+source-repository head
+  location: https://github.com/liisikerik/aoide
+  type: git
