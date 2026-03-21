@@ -1,248 +1,203 @@
---------------------------------------------------------------------------------------------------------------------------------
-{-# OPTIONS_GHC -Wall #-}
-{-# LANGUAGE NegativeLiterals, StandaloneDeriving #-}
 {-|
-Description: A module for generating MIDI files.
-
-This module contains the data structures and the function for generating MIDI files from note sequences.
+Description: Generating MIDI files.
 -}
-module Composition.Midi (Instrument (..), Track (..), Part (..), midi) where
-  import Composition.Notes (
-    Note (..),
-    Note_name (..),
-    Rat,
-    Simultaneous (..),
-    Time (..),
-    Time_and_position (..),
-    sequential_length)
-  import Composition.Theory (semitones_from_c)
-  import Control.Monad (join, zipWithM)
-  import Data.ByteString (pack, writeFile)
-  import Data.Foldable (traverse_)
-  import Data.List (delete, transpose)
-  import Data.Ratio ((%), numerator, denominator)
-  import Data.Word (Word8)
-  type Err = Either String
-  -- | MIDI instruments.
-  data Instrument =
-    Accordion |
-    Bassoon |
-    Bells |
-    Cello |
-    Clarinet |
-    Double_bass |
-    Dulcimer |
-    English_horn |
-    Flute |
-    French_horn |
-    Glockenspiel |
-    Guitar |
-    Harp |
-    Harpsichord |
-    Oboe |
-    Organ |
-    Piano |
-    Piccolo |
-    Pizzicato_strings |
-    Recorder |
-    Timpani |
-    Trombone |
-    Trumpet |
-    Viola |
-    Violin |
-    Voice
-  -- | Each part can have a different time signature, tempo and instrumentation. The second argument is the tempo specified in
-  -- beats per minute.
-  data Part = Part Time_and_position Int [Track]
-  -- | A track consists of one homorhythmic note sequence. Heterorhythmic voices require separate tracks.
-  data Track = Track Instrument [Simultaneous]
-  deriving instance Show Instrument
-  deriving instance Show Part
-  deriving instance Show Track
-  channels :: [Word8]
-  channels = delete 9 [0 .. 15]
-  check :: String -> Bool -> Err ()
-  check err condition =
-    case condition of
-      False -> Left err
-      True -> Right ()
-  check_range :: Ord t => String -> t -> t -> t -> Err ()
-  check_range typ min_t max_t x = check (typ ++ " out of range.") (min_t <= x && max_t >= x)
-  encode_chunk :: [Word8] -> [Word8] -> [Word8]
-  encode_chunk typ dat = typ ++ encode_int_fixed 4 (length dat) ++ dat
-  encode_end_track :: [Word8]
-  encode_end_track = encode_meta_event_0 47 []
-  encode_event :: Int -> Rat -> [Word8] -> [Word8]
-  encode_event lcd time dat = encode_time lcd time ++ dat
+module Composition.MIDI (midi) where
+  import Composition.Errors
+  import Composition.Notes
+  import Composition.Score
+  import Composition.Theory
+  import Composition.Time
+  import Control.Monad
+  import Control.Monad.Except
+  import Control.Monad.State.Strict
+  import Control.Monad.Trans.Except
+  import Data.ByteString as ByteString
+  import Data.Foldable as Foldable
+  import Data.List as List
+  import Data.Ratio
+  import Data.Set as Set
+  import Data.Word
+  import Parser.Files
+  import Parser.Utilities
+  data MIDI_part = MIDI_part {time_denominator :: Basic_length, tempo :: Tempo, tracks :: [Pitched_or_unpitched Track]}
+  deriving instance Show MIDI_part
+  encode_chunk :: [Word8] -> [Word8] -> Either Error [Word8]
+  encode_chunk typ dat =
+    do
+      len <- encode_int_fixed 4 Track_length_IOOR (Foldable.length dat)
+      Right (typ <> len <> dat)
   encode_format :: [Word8]
   encode_format = [0, 1]
-  encode_header :: Int -> Int -> Err [Word8]
-  encode_header number_of_tracks lcd =
-    do
-      let quarter = length_in_ticks lcd (1 % 4)
-      check_range "The number of ticks in quarter note" 1 max_ticks_in_quarter_note quarter
-      Right
-        (encode_chunk
-          [77, 84, 104, 100]
-          (encode_format ++ encode_int_fixed 2 (1 + number_of_tracks) ++ encode_int_fixed 2 quarter))
-  encode_instrument :: Word8 -> Instrument -> [Word8]
-  encode_instrument channel instrument = encode_midi_event channel 12 [encode_instrument' instrument]
-  encode_instrument' :: Instrument -> Word8
-  encode_instrument' instrument =
-    case instrument of
-      Accordion -> 21
-      Bassoon -> 70
-      Bells -> 14
-      Cello -> 42
-      Clarinet -> 71
-      Double_bass -> 43
-      Dulcimer -> 15
-      English_horn -> 69
-      Flute -> 73
-      French_horn -> 60
-      Glockenspiel -> 9
-      Guitar -> 24
-      Harp -> 46
-      Harpsichord -> 6
-      Oboe -> 68
-      Organ -> 19
-      Piano -> 0
-      Piccolo -> 72
-      Pizzicato_strings -> 45
-      Recorder -> 74
-      Timpani -> 47
-      Trombone -> 57
-      Trumpet -> 56
-      Viola -> 41
-      Violin -> 40
-      Voice -> 52
-  encode_int_fixed :: Integer -> Int -> [Word8]
-  encode_int_fixed n i =
-    case n of
-      0 -> []
-      _ -> encode_int_fixed (n - 1) (div i 256) ++ [fromIntegral i]
-  encode_int_flexible :: Int -> [Word8]
-  encode_int_flexible i = encode_int_flexible' (div i 128) ++ [fromIntegral (mod i 128)]
-  encode_int_flexible' :: Int -> [Word8]
-  encode_int_flexible' i =
-    case i of
-      0 -> []
-      _ -> encode_int_flexible' (div i 128) ++ [128 + fromIntegral (mod i 128)]
-  max_number_of_tracks :: Int
-  max_number_of_tracks = length channels
-  max_ticks_in_quarter_note :: Int
-  max_ticks_in_quarter_note = 2 ^ (16 :: Integer) - 1
-  max_track_length :: Int
-  max_track_length = 2 ^ (32 :: Integer) - 1
-  -- | Encodes the score in MIDI format and writes it to the specified file.
-  midi :: String -> [Part] -> IO ()
-  midi file_name score =
-    case encode_score score of
-      Left err -> putStrLn ("Midi error. " ++ err)
-      Right encoding -> Data.ByteString.writeFile (file_name ++ ".mid") (pack encoding)
-  encode_meta_event :: Int -> Rat -> Word8 -> [Word8] -> [Word8]
-  encode_meta_event lcd time typ dat = encode_event lcd time ([255, typ, fromIntegral (length dat)] ++ dat)
-  encode_meta_event_0 :: Word8 -> [Word8] -> [Word8]
-  encode_meta_event_0 = encode_meta_event 1 0
-  encode_midi_event :: Word8 -> Word8 -> [Word8] -> [Word8]
-  encode_midi_event channel typ dat = encode_event 1 0 ([channel + 16 * typ] ++ dat)
-  encode_note :: Note -> Word8
-  encode_note (Note octave note_name) = fromIntegral (12 * (1 + octave) + semitones_from_c note_name)
-  encode_note_off :: Word8 -> Note -> [Word8]
-  encode_note_off channel note = encode_midi_event channel 8 [encode_note note, velocity]
-  encode_note_on :: Word8 -> Note -> [Word8]
-  encode_note_on channel note = encode_midi_event channel 9 [encode_note note, velocity]
-  encode_part :: Int -> Int -> Part -> Err [[Word8]]
-  encode_part number_of_tracks lcd (Part (Time_and_position time _) tempo tracks) =
-    do
-      tempo' <- encode_tempo time tempo
-      let tracks' = (\(Track instrument sequential) -> Track instrument (sequential ++ [Simultaneous [] 1])) <$> tracks
-      len <-
-        case track_length <$> tracks' of
-          [] -> Right 1
-          len' : lengths ->
-            do
-              check "Track length mismatch." (all ((==) len') lengths)
-              Right len'
-      check_range "Part length" 0 max_note_length (length_in_ticks lcd len)
-      let rest = encode_rest lcd len
-      tracks'' <- zipWithM (encode_track lcd) channels tracks'
-      Right ([tempo' ++ rest] ++ tracks'' ++ replicate (number_of_tracks - length tracks') rest)
-  encode_rest :: Int -> Rat -> [Word8]
-  encode_rest lcd len = encode_text lcd len []
-  encode_score :: [Part] -> Err [Word8]
+  encode_int_fixed :: (MonadError Error f) => Integer -> Is_out_of_range_type -> Int -> f [Word8]
+  encode_int_fixed bytes typ i =
+    case bytes of
+      0 ->
+        case i of
+          0 -> return []
+          _ -> throwError (Is_out_of_range_without_location typ)
+      _ ->
+        do
+          let (i', last_byte) = divMod i 256
+          encoded_i' <- encode_int_fixed (bytes - 1) typ i'
+          return (encoded_i' <> [fromIntegral last_byte])
+  encode_int_flexible :: (MonadError Error f) => Int -> f [Word8]
+  encode_int_flexible = encode_int_flexible' 4 0
+  encode_int_flexible' :: (MonadError Error f) => Integer -> Word8 -> Int -> f [Word8]
+  encode_int_flexible' max_bytes msb i =
+    case max_bytes of
+      0 -> throwError (Is_out_of_range_without_location Event_or_part_length_IOOR)
+      _ ->
+        do
+          let (i', last_byte) = divMod i 128
+          encoded_i' <-
+            case i' of
+              0 -> return []
+              _ -> encode_int_flexible' (max_bytes - 1) 128 i'
+          return (encoded_i' <> [msb + fromIntegral last_byte])
+  encode_score :: [MIDI_part] -> Either Error [Word8]
   encode_score parts =
     do
-      let parts' = parts ++ [Part (Time_and_position (Time [2, 2] 4) 0) 100 []]
-      let number_of_tracks = maximum (number_of_tracks_in_part <$> parts')
-      check_range "Number of tracks" 0 max_number_of_tracks number_of_tracks
-      let lcd = lcm_all (lcd_of_part <$> parts')
-      header <- encode_header number_of_tracks lcd
-      parts'' <- traverse (encode_part number_of_tracks lcd) parts'
-      tracks <- traverse encode_tracks (transpose parts'')
-      Right (header ++ join tracks)
-  encode_sequential :: Int -> Word8 -> [Simultaneous] -> Err [Word8]
-  encode_sequential lcd channel sequential = join <$> traverse (encode_simultaneous lcd channel) sequential
-  encode_simultaneous :: Int -> Word8 -> Simultaneous -> Err [Word8]
-  encode_simultaneous lcd channel (Simultaneous notes len) =
+      header <- encode_header
+      encoded_parts <- traverse encode_part parts
+      tracks <- traverse encode_complete_track (List.transpose encoded_parts)
+      Right (header <> join tracks) where
+    encode_complete_track :: [[Word8]] -> Either Error [Word8]
+    encode_complete_track track_parts =
+      do
+        end_track <- encode_end_track
+        encode_chunk [77, 84, 114, 107] (join track_parts <> end_track)
+    encode_end_track :: Either Error [Word8]
+    encode_end_track = encode_metaevent 0 47 []
+    encode_events :: forall note_type .
+      MIDI_instrument -> Word8 -> Velocity -> [Event_fraction note_type] -> StateT [Word8] (Either Error) [Word8]
+    encode_events instrument channel velocity events =
+      do
+        check (Is_out_of_range_without_location Velocity_IOOR) (between 0 max_velocity velocity)
+        check (Is_out_of_range_without_location MIDI_instrument_code_IOOR) (between 0 127 instrument)
+        join <$> traverse encode_event (events <> [Event' Set.empty rest_after_part]) where
+      encode_event :: Event_fraction note_type -> StateT [Word8] (Either Error) [Word8]
+      encode_event (Event' notes len) =
+        do
+          encoded_notes <- traverse encode_note (elems notes)
+          notes_on <- traverse encode_note_on encoded_notes
+          rest <- encode_rest
+          notes_off <- traverse encode_note_off encoded_notes
+          return (join notes_on <> rest <> join notes_off) where
+        encode_rest :: StateT [Word8] (Either Error) [Word8]
+        encode_rest = encode_metaevent len 1 []
+      encode_note :: Note note_type -> StateT [Word8] (Either Error) Word8
+      encode_note note =
+        case note of
+          Pitched_note _ _ ->
+            do
+              check (Is_out_of_range_without_location Note_IOOR) (between min_note max_note note)
+              return (fromIntegral (distance_in_semitones min_note note))
+          Unpitched_note -> return instrument
+      encode_note_event :: Word8 -> Word8 -> StateT [Word8] (Either Error) [Word8]
+      encode_note_event typ note = encode_midi_event channel typ [note, velocity]
+      encode_note_off :: Word8 -> StateT [Word8] (Either Error) [Word8]
+      encode_note_off = encode_note_event 8
+      encode_note_on :: Word8 -> StateT [Word8] (Either Error) [Word8]
+      encode_note_on = encode_note_event 9
+    encode_metaevent :: (MonadError Error f) => Ratio Int -> Word8 -> [Word8] -> f [Word8]
+    encode_metaevent time typ dat = encode_midi_or_metaevent time ([255, typ, fromIntegral (Foldable.length dat)] <> dat)
+    encode_header :: Either Error [Word8]
+    encode_header =
+      do
+        encoded_number_of_tracks <- encode_int_fixed 2 The_number_of_tracks_IOOR number_of_tracks
+        length_of_quarter_note_in_ticks <-
+          encode_int_fixed 2 The_least_common_denominator_of_note_lengths_IOOR (length_in_ticks (1 % 4))
+        encode_chunk [77, 84, 104, 100] (encode_format <> encoded_number_of_tracks <> length_of_quarter_note_in_ticks)
+    encode_midi_event :: Word8 -> Word8 -> [Word8] -> StateT [Word8] (Either Error) [Word8]
+    encode_midi_event channel typ dat = encode_midi_or_metaevent 0 ([channel + 16 * typ] <> dat)
+    encode_midi_or_metaevent :: (MonadError Error f) => Ratio Int -> [Word8] -> f [Word8]
+    encode_midi_or_metaevent time event =
+      do
+        encoded_time <- encode_length
+        return (encoded_time <> event) where
+      encode_length :: (MonadError Error f) => f [Word8]
+      encode_length = encode_int_flexible (length_in_ticks time)
+    encode_part :: MIDI_part -> Either Error [[Word8]]
+    encode_part (MIDI_part {time_denominator, tempo, tracks}) =
+      do
+        encoded_tempo <- encode_tempo
+        empty_track <- create_empty_track
+        encoded_tracks <- encode_tracks (tracks <> List.replicate (number_of_tracks - Foldable.length tracks) empty_track)
+        Right
+          (case encoded_tracks of
+            [] -> []
+            track : tracks' -> (encoded_tempo <> track) : tracks') where
+      create_empty_track :: Either Error (Pitched_or_unpitched Track)
+      create_empty_track =
+        do
+          len <- tracks_length tracks
+          Right (Unpitched (Track {instrument = 0, velocity = 0, events = [Event' Set.empty len]}))
+      encode_tempo :: Either Error [Word8]
+      encode_tempo =
+        do
+          encoded_tempo <- encode_int_fixed 3 Tempo_IOOR quarter_note_length_in_microseconds
+          encode_metaevent 0 81 encoded_tempo
+      quarter_note_length_in_microseconds :: Int
+      quarter_note_length_in_microseconds =
+        round (60000000 * denominator (basic_length_to_fraction time_denominator) % (4 * tempo))
+    encode_pitched_track :: Track Pitched -> StateT [Word8] (Either Error) [Word8]
+    encode_pitched_track (Track {instrument, velocity, events}) =
+      do
+        channel <- new_channel
+        encoded_instrument <- encode_instrument channel
+        encoded_events <- encode_events instrument channel velocity events
+        return (encoded_instrument <> encoded_events) where
+      encode_instrument :: Word8 -> StateT [Word8] (Either Error) [Word8]
+      encode_instrument channel = encode_midi_event channel 12 [instrument]
+    encode_track :: Pitched_or_unpitched Track -> StateT [Word8] (Either Error) [Word8]
+    encode_track = pitched_or_unpitched encode_pitched_track encode_unpitched_track
+    encode_tracks :: [Pitched_or_unpitched Track] -> Either Error [[Word8]]
+    encode_tracks tracks = evalStateT (traverse encode_track tracks) pitched_channels
+    encode_unpitched_track :: Track Unpitched -> StateT [Word8] (Either Error) [Word8]
+    encode_unpitched_track (Track {instrument, velocity, events}) = encode_events instrument unpitched_channel velocity events
+    lcd :: Int
+    lcd = 4 `lcm` lcm_all (lcd_part <$> parts)
+    length_in_ticks :: Length_fraction -> Int
+    length_in_ticks len = numerator (fromIntegral lcd * len)
+    number_of_tracks :: Int
+    number_of_tracks = Foldable.maximum (0 : (number_of_tracks_in_part <$> parts))
+  lcd_event :: Event_fraction note_type -> Int
+  lcd_event (Event' _ len) = denominator len
+  lcd_part :: MIDI_part -> Int
+  lcd_part (MIDI_part {time_denominator, tracks}) =
+    denominator (basic_length_to_fraction time_denominator) `lcm` lcm_all (pitched_and_unpitched lcd_track <$> tracks)
+  lcd_track :: Track note_type -> Int
+  lcd_track (Track {events}) = lcm_all (lcd_event <$> events)
+  max_note :: Note Pitched
+  max_note = Pitched_note 9 G
+  -- | Encode the score in MIDI format and write it to the specified file.
+  midi :: Score -> File_path -> ExceptT Error IO ()
+  midi score file_path =
     do
-      traverse_ (check_range "Note" min_note max_note) notes
-      check "Non-positive note length." (0 < len)
-      Right ((notes >>= encode_note_on channel) ++ encode_rest lcd len ++ (notes >>= encode_note_off channel))
-  encode_tempo :: Time -> Int -> Err [Word8]
-  encode_tempo time tempo =
+      encoded_score <- except (encode_score (midi_score score))
+      write_file "mid" ByteString.writeFile File_error file_path (pack encoded_score) where
+  midi_score :: Score -> [MIDI_part]
+  midi_score (Score {parts}) = midi_part <$> parts
+  midi_part :: Part -> MIDI_part
+  midi_part (Part {time = Time _ time_denominator, tempo, stave_groups}) =
+    MIDI_part {time_denominator, tempo, tracks = remove_notational_information stave_groups}
+  min_note :: Note Pitched
+  min_note = Pitched_note -1 C
+  new_channel :: StateT [Word8] (Either Error) Word8
+  new_channel =
     do
-      let tempo' = microseconds_in_quarter_note time tempo
-      check_range "Tempo" 1 max_tempo tempo'
-      Right (encode_meta_event_0 81 (encode_int_fixed 3 tempo'))
-  encode_text :: Int -> Rat -> [Word8] -> [Word8]
-  encode_text lcd time = encode_meta_event lcd time 1
-  encode_time :: Int -> Rat -> [Word8]
-  encode_time lcd time = encode_int_flexible (length_in_ticks lcd time)
-  encode_track :: Int -> Word8 -> Track -> Err [Word8]
-  encode_track lcd channel (Track instrument sequential) =
-    do
-      sequential' <- encode_sequential lcd channel sequential
-      Right (encode_instrument channel instrument ++ sequential')
-  encode_tracks :: [[Word8]] -> Err [Word8]
-  encode_tracks tracks =
-    do
-      let track = join tracks ++ encode_end_track
-      check_range "Track length" 0 max_track_length (length track)
-      Right (encode_chunk [77, 84, 114, 107] track)
-  lcd_of_part :: Part -> Int
-  lcd_of_part (Part time_and_initial_position _ tracks) =
-    lcm (lcd_of_time_and_position time_and_initial_position) (lcm_all (lcd_of_track <$> tracks))
-  lcd_of_sequential :: [Simultaneous] -> Int
-  lcd_of_sequential sequential = lcm_all (lcd_of_simultaneous <$> sequential)
-  lcd_of_simultaneous :: Simultaneous -> Int
-  lcd_of_simultaneous (Simultaneous _ len) = denominator len
-  lcd_of_time_and_position :: Time_and_position -> Int
-  lcd_of_time_and_position (Time_and_position time position) = lcm (time_denominator time) (denominator position)
-  lcd_of_track :: Track -> Int
-  lcd_of_track (Track _ sequential) = lcd_of_sequential sequential
-  lcm_all :: Integral t => [t] -> t
-  lcm_all = foldr lcm 1
-  length_in_ticks :: Int -> Rat -> Int
-  length_in_ticks lcd time = numerator time * div lcd (denominator time)
-  max_note :: Note
-  max_note = Note 9 G
-  max_note_length :: Int
-  max_note_length = 2 ^ (32 :: Integer) - 1
-  max_tempo :: Int
-  max_tempo = 2 ^ (24 :: Integer) - 1
-  microseconds_in_minute :: Int
-  microseconds_in_minute = 60000000
-  microseconds_in_quarter_note :: Time -> Int -> Int
-  microseconds_in_quarter_note (Time _ den) tempo = round (microseconds_in_minute * den % (4 * tempo))
-  min_note :: Note
-  min_note = Note -2 B_sharp
-  number_of_tracks_in_part :: Part -> Int
-  number_of_tracks_in_part (Part _ _ tracks) = length tracks
-  time_denominator :: Time -> Int
-  time_denominator (Time _ den) = den
-  track_length :: Track -> Rat
-  track_length (Track _ sequential) = sequential_length sequential
-  velocity :: Word8
-  velocity = 127
---------------------------------------------------------------------------------------------------------------------------------
+      channels <- get
+      case channels of
+        [] -> throwError (Is_out_of_range_without_location The_number_of_pitched_tracks_IOOR)
+        channel : channels' ->
+          do
+            put channels'
+            return channel
+  number_of_tracks_in_part :: MIDI_part -> Int
+  number_of_tracks_in_part (MIDI_part {tracks}) = Foldable.length tracks
+  pitched_channels :: [Word8]
+  pitched_channels = List.delete unpitched_channel [0 .. 15]
+  rest_after_part :: Length_fraction
+  rest_after_part = 1
+  unpitched_channel :: Word8
+  unpitched_channel = 9
