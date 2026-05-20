@@ -1,12 +1,12 @@
 {-|
-Description: Generating MIDI files.
+Generates MIDI files.
 -}
 module Composition.MIDI (midi) where
   import Composition.Errors
+  import Composition.Notation
   import Composition.Notes
   import Composition.Score
   import Composition.Theory
-  import Composition.Time
   import Control.Monad
   import Control.Monad.Except
   import Control.Monad.State.Strict
@@ -45,7 +45,7 @@ module Composition.MIDI (midi) where
   encode_int_flexible' :: (MonadError Error f) => Integer -> Word8 -> Int -> f [Word8]
   encode_int_flexible' max_bytes msb i =
     case max_bytes of
-      0 -> throwError (Is_out_of_range_without_location Event_or_part_length_IOOR)
+      0 -> throwError (Event_or_part_length_is_out_of_range_for_MIDI)
       _ ->
         do
           let (i', last_byte) = divMod i 128
@@ -73,7 +73,7 @@ module Composition.MIDI (midi) where
     encode_events instrument channel velocity events =
       do
         check (Is_out_of_range_without_location Velocity_IOOR) (between 0 max_velocity velocity)
-        check (Is_out_of_range_without_location MIDI_instrument_code_IOOR) (between 0 127 instrument)
+        check (MIDI_instrument_code_is_out_of_range_data (fromIntegral instrument)) (between 0 127 instrument)
         join <$> traverse encode_event (events <> [Event' Set.empty rest_after_part]) where
       encode_event :: Event_fraction note_type -> StateT [Word8] (Either Error) [Word8]
       encode_event (Event' notes len) =
@@ -90,7 +90,7 @@ module Composition.MIDI (midi) where
         case note of
           Pitched_note _ _ ->
             do
-              check (Is_out_of_range_without_location Note_IOOR) (between min_note max_note note)
+              check (Note_is_out_of_range_for_MIDI note) (between min_note max_note note)
               return (fromIntegral (distance_in_semitones min_note note))
           Unpitched_note -> return instrument
       encode_note_event :: Word8 -> Word8 -> StateT [Word8] (Either Error) [Word8]
@@ -138,8 +138,7 @@ module Composition.MIDI (midi) where
           encoded_tempo <- encode_int_fixed 3 Tempo_IOOR quarter_note_length_in_microseconds
           encode_metaevent 0 81 encoded_tempo
       quarter_note_length_in_microseconds :: Int
-      quarter_note_length_in_microseconds =
-        round (60000000 * denominator (basic_length_to_fraction time_denominator) % (4 * tempo))
+      quarter_note_length_in_microseconds = round ((60000000 * basic_length_denominator time_denominator) % (4 * tempo))
     encode_pitched_track :: Track Pitched -> StateT [Word8] (Either Error) [Word8]
     encode_pitched_track (Track {instrument, velocity, events}) =
       do
@@ -165,7 +164,7 @@ module Composition.MIDI (midi) where
   lcd_event (Event' _ len) = denominator len
   lcd_part :: MIDI_part -> Int
   lcd_part (MIDI_part {time_denominator, tracks}) =
-    denominator (basic_length_to_fraction time_denominator) `lcm` lcm_all (pitched_and_unpitched lcd_track <$> tracks)
+    basic_length_denominator time_denominator `lcm` lcm_all (pitched_and_unpitched lcd_track <$> tracks)
   lcd_track :: Track note_type -> Int
   lcd_track (Track {events}) = lcm_all (lcd_event <$> events)
   max_note :: Note Pitched

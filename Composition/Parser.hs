@@ -1,11 +1,10 @@
 {-|
-Parse the custom file format for scores.
+Parse the custom score file format.
 -}
 module Composition.Parser (parse) where
   import Composition.Errors
   import Composition.Notes
   import Composition.Score
-  import Composition.Time
   import Control.Applicative
   import Control.Monad.Except
   import Control.Monad.Trans.Except
@@ -33,17 +32,15 @@ module Composition.Parser (parse) where
     Zero_char
   type Parser = Parser' Token Error
   data Token =
-    Clef_and_stave_token |
     Clef_name_name_token |
     Clef_name_value_token Clef_name |
     Clef_token |
-    Clefs_and_staves_token |
     Dot_token |
     Eq_token |
     Header_field_token Header_field |
     Header_token |
     Initial_position_token |
-    Instrument_clefs_and_staves_token |
+    Instrument_and_staves_token |
     Instrument_name_token |
     Key_token |
     Left_curly_bracket_token |
@@ -60,15 +57,18 @@ module Composition.Parser (parse) where
     Right_curly_bracket_token |
     Right_square_bracket_token |
     Score_token |
+    Short_instrument_name_token |
     Slash_token |
-    Stave_groups_token |
     Stave_token |
+    Stave_groups_token |
+    Staves_token |
     Tempo_token |
     Text_token String |
     Tie_token |
     Time_name_token |
     Time_value_token |
     Title_token |
+    Tracks_token |
     Transposition_token |
     Unpitched_note_token |
     Unpitched_token |
@@ -91,22 +91,16 @@ module Composition.Parser (parse) where
       '-' -> Minus_char
       '0' -> Zero_char
       _ | isDigit c && c /= '0' -> Nonzero_nat_char c
-      '=' -> Delimiter_char Eq_token
       _ -> Invalid_char
   clef_name_token :: Token -> Maybe Clef_name
   clef_name_token token =
     case token of
       Clef_name_value_token clef_name -> Just clef_name
       _ -> Nothing
-  construct_basic_length :: Int -> Either (Location -> Error) Basic_length
-  construct_basic_length len =
-    case denominator_to_basic_length len of
-      Nothing -> Left Invalid_note_length
-      Just len' -> Right len'
   construct_header :: [(Header_field, String)] -> Either (Location -> Error) (Map Header_field String)
   construct_header header =
     case construct_map header of
-      Nothing -> Left Duplicate_header_fields
+      Nothing -> Left (Duplicate_header_fields <$> Just)
       Just header' -> Right header'
   construct_key :: [Note_name] -> Either (Location -> Error) (Set Note_name)
   construct_key key =
@@ -121,7 +115,7 @@ module Composition.Parser (parse) where
   construct_word :: String -> Either (Location -> Error) Token
   construct_word word =
     (case construct_clef_name <|> construct_header_field <|> construct_keyword <|> construct_note_name' of
-      Nothing -> Left (Invalid_word word)
+      Nothing -> Left (Invalid_word word <$> Just)
       Just token -> Right token) where
     construct_clef_name :: Maybe Token
     construct_clef_name = Clef_name_value_token <$> readMaybe word
@@ -130,29 +124,30 @@ module Composition.Parser (parse) where
     construct_keyword :: Maybe Token
     construct_keyword =
       case word of
-        "Clef_and_stave" -> Just Clef_and_stave_token
-        "Instrument_clefs_and_staves" -> Just Instrument_clefs_and_staves_token
+        "Instrument_and_staves" -> Just Instrument_and_staves_token
         "Part" -> Just Part_token
         "Percussion_clef" -> Just Percussion_clef_token
         "Pitched" -> Just Pitched_token
         "Pitched_clef" -> Just Pitched_clef_token
         "Score" -> Just Score_token
+        "Stave" -> Just Stave_token
         "Time" -> Just Time_value_token
         "Unpitched" -> Just Unpitched_token
         "clef" -> Just Clef_token
         "clef_name" -> Just Clef_name_name_token
-        "clefs_and_staves" -> Just Clefs_and_staves_token
         "header" -> Just Header_token
         "initial_position" -> Just Initial_position_token
         "instrument_name" -> Just Instrument_name_token
         "key" -> Just Key_token
         "midi_instrument" -> Just MIDI_instrument_token
         "parts" -> Just Parts_token
-        "stave" -> Just Stave_token
+        "short_instrument_name" -> Just Short_instrument_name_token
         "stave_groups" -> Just Stave_groups_token
+        "staves" -> Just Staves_token
         "tempo" -> Just Tempo_token
         "time" -> Just Time_name_token
         "title" -> Just Title_token
+        "tracks" -> Just Tracks_token
         "transposition" -> Just Transposition_token
         "velocity" -> Just Velocity_token
         "x" -> Just Unpitched_note_token
@@ -166,15 +161,20 @@ module Composition.Parser (parse) where
             natural_note_name' <- read_natural_note_name natural_note_name
             accidental' <- read_accidental accidental
             Note_name_token <$> construct_note_name natural_note_name' accidental'
+  convert_basic_length :: Int -> Either (Location -> Error) Basic_length
+  convert_basic_length len =
+    case denominator_to_basic_length len of
+      Nothing -> Left (Invalid_note_length len)
+      Just len' -> Right len'
   convert_midi_instrument :: Int -> Either (Location -> Error) MIDI_instrument
   convert_midi_instrument midi_instrument =
     do
-      check (Is_out_of_range_with_location MIDI_instrument_code_IOOR) (between 0 127 midi_instrument)
+      check (MIDI_instrument_code_is_out_of_range_score midi_instrument) (between 0 127 midi_instrument)
       Right (fromIntegral midi_instrument)
   convert_time_numerator_factor :: Int -> Either (Location -> Error) Time_numerator_factor
   convert_time_numerator_factor time_numerator_factor =
     case int_to_time_numerator_factor time_numerator_factor of
-      Nothing -> Left Invalid_time_numerator_factor
+      Nothing -> Left (Invalid_time_numerator_factor time_numerator_factor)
       Just time_numerator_factor' -> Right time_numerator_factor'
   convert_velocity :: Int -> Either (Location -> Error) Velocity
   convert_velocity velocity =
@@ -233,13 +233,14 @@ module Composition.Parser (parse) where
     case token of
       Note_name_token note_name -> Just note_name
       _ -> Nothing
+  -- | Read the score from a .aoi file.
   parse :: File_path -> ExceptT Error IO Score
   parse file_path =
     do
       score <- read_file "aoi" readFile File_error file_path
-      except (fromJust (parse' classify_char next_location tokenise parse_score Parse_error score))
+      except (fromJust (parse' classify_char next_location tokenise parse_score Parse_error_score score))
   parse_basic_length :: Parser Basic_length
-  parse_basic_length = fmap_filter_parser construct_basic_length parse_positive_int
+  parse_basic_length = fmap_filter_parser convert_basic_length parse_positive_int
   parse_clef_name :: Parser Clef_name
   parse_clef_name = parse_token' clef_name_token
   parse_curly_brackets :: Parser t -> Parser t
@@ -270,36 +271,27 @@ module Composition.Parser (parse) where
   parse_header_field_name = parse_token' header_field_token
   parse_initial_position :: Parser Initial_position
   parse_initial_position = parse_zero_initial_position <+> parse_nonzero_initial_position
-  parse_instrument_clefs_and_staves :: Parser (Pitched_or_unpitched Instrument_clefs_and_staves)
-  parse_instrument_clefs_and_staves =
-    (
-      Pitched <$> parse_instrument_clefs_and_staves' Branch_pitched <+>
-      Unpitched <$> parse_instrument_clefs_and_staves' Branch_unpitched)
-  parse_instrument_clefs_and_staves' :: forall note_type . Branch note_type -> Parser (Instrument_clefs_and_staves note_type)
-  parse_instrument_clefs_and_staves' branch =
+  parse_instrument_and_staves :: Parser (Pitched_or_unpitched Instrument_and_staves)
+  parse_instrument_and_staves =
+    Pitched <$> parse_instrument_and_staves' Branch_pitched <+> Unpitched <$> parse_instrument_and_staves' Branch_unpitched
+  parse_instrument_and_staves' :: forall note_type . Branch note_type -> Parser (Instrument_and_staves note_type)
+  parse_instrument_and_staves' branch =
     do
       parse_pitched_or_unpitched
       parse_struct
-        Instrument_clefs_and_staves_token
+        Instrument_and_staves_token
         (do
           instrument_name <- parse_field Instrument_name_token parse_text
+          short_instrument_name <- parse_field Short_instrument_name_token parse_text
           midi_instrument <- parse_field MIDI_instrument_token parse_midi_instrument
           velocity <- parse_field Velocity_token parse_velocity
-          clefs_and_staves <- parse_field Clefs_and_staves_token (parse_list' parse_clef_and_stave)
-          return (Instrument_clefs_and_staves {instrument_name, midi_instrument, velocity, clefs_and_staves})) where
+          staves <- parse_field Staves_token (parse_list' parse_stave)
+          return (Instrument_and_staves {instrument_name, short_instrument_name, midi_instrument, velocity, staves})) where
     parse_clef :: Parser (Clef note_type)
     parse_clef =
       case branch of
         Branch_pitched -> parse_pitched_clef
         Branch_unpitched -> parse_unpitched_clef
-    parse_clef_and_stave :: Parser (Clef_and_stave note_type)
-    parse_clef_and_stave =
-      parse_struct
-        Clef_and_stave_token
-        (do
-          clef <- parse_field Clef_token parse_clef
-          stave <- parse_field Stave_token parse_stave
-          return (Clef_and_stave {clef, stave}))
     parse_event :: Parser (Event note_type)
     parse_event = parse_event' <+> parse_triplet
     parse_event' :: Parser (Event note_type)
@@ -315,15 +307,23 @@ module Composition.Parser (parse) where
     parse_notes = parse_notes' <+> parse_tie
     parse_notes' :: Parser (Notes note_type)
     parse_notes' = fmap_filter_parser construct_notes (parse_list' parse_note)
-    parse_one_track :: Parser (Stave note_type)
+    parse_one_track :: Parser (Tracks note_type)
     parse_one_track = One_track <$> parse_events
     parse_pitched_or_unpitched :: Parser ()
     parse_pitched_or_unpitched = parse_token' pitched_or_unpitched_token
     parse_stave :: Parser (Stave note_type)
-    parse_stave = parse_square_brackets (parse_one_track <+> parse_two_tracks)
+    parse_stave =
+      parse_struct
+        Stave_token
+        (do
+          clef <- parse_field Clef_token parse_clef
+          tracks <- parse_field Tracks_token parse_tracks
+          return (Stave {clef, tracks}))
+    parse_tracks :: Parser (Tracks note_type)
+    parse_tracks = parse_square_brackets (parse_one_track <+> parse_two_tracks)
     parse_triplet :: Parser (Event note_type)
     parse_triplet = Triplet <$> parse_events
-    parse_two_tracks :: Parser (Stave note_type)
+    parse_two_tracks :: Parser (Tracks note_type)
     parse_two_tracks = Two_tracks <$> parse_events <*> parse_events
     pitched_or_unpitched_token :: Token -> Maybe ()
     pitched_or_unpitched_token token =
@@ -364,7 +364,7 @@ module Composition.Parser (parse) where
         time <- parse_field Time_name_token parse_time
         initial_position <- parse_field Initial_position_token parse_initial_position
         tempo <- parse_field Tempo_token parse_positive_int
-        stave_groups <- parse_field Stave_groups_token (parse_list' (parse_list' parse_instrument_clefs_and_staves))
+        stave_groups <- parse_field Stave_groups_token (parse_list' (parse_list' parse_instrument_and_staves))
         return (Part {title, key, time, initial_position, tempo, stave_groups}))
   parse_pitched_clef :: Parser (Clef Pitched)
   parse_pitched_clef =
@@ -383,10 +383,9 @@ module Composition.Parser (parse) where
     parse_struct
       Score_token
       (do
-        title <- parse_field Title_token parse_text
         header <- parse_field Header_token parse_header
         parts <- parse_field Parts_token (parse_list' parse_part)
-        return (Score {title, header, parts}))
+        return (Score {header, parts}))
   parse_slash :: Parser ()
   parse_slash = parse_token Slash_token
   parse_square_brackets :: Parser t -> Parser t

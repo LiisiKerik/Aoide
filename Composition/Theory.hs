@@ -1,5 +1,5 @@
 {-|
-Basic music theory.
+Basic music theory: intervals.
 -}
 module Composition.Theory (
   Interval (..),
