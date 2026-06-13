@@ -115,7 +115,7 @@ module Composition.Parser (parse) where
   construct_word :: String -> Either (Location -> Error) Token
   construct_word word =
     (case construct_clef_name <|> construct_header_field <|> construct_keyword <|> construct_note_name' of
-      Nothing -> Left (Invalid_word word <$> Just)
+      Nothing -> Left (Invalid_word_score word)
       Just token -> Right token) where
     construct_clef_name :: Maybe Token
     construct_clef_name = Clef_name_value_token <$> readMaybe word

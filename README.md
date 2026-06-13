@@ -223,25 +223,34 @@ Notes can be either a set of new notes or a tie.
 * `..`
 * ...
 
-## Playables file
+## Playability file
 
-Playables file is needed if you want to generate keyboard reductions. A default playables file `Keyboard.key` is provided and
-you can modify it according to your own preferred style of music (you might need to account for a greater variety of dissonant
-chords) and your own hand hand span.
+Playability file is needed for keyboard reductions. A default playability file `Keyboard.key` is provided and you can modify it
+according to your own preferred style of music (you might need to account for a greater variety of dissonant chords) and your
+own hand hand span.
 
-### `PLAYABLES`
+### `PLAYABILITY`
 
 ~~~
-(PLAYABLE)
-(PLAYABLE)
-(PLAYABLE)
-...
+Playability = {
+  right_hand_playbles = [
+    (PLAYABLE)
+    (PLAYABLE)
+    (PLAYABLE)
+    ...]
+  discard = [(SEMITONE_LIST) (SEMITONE_LIST) (SEMITONE_LIST) ...]}
 ~~~
 
 ### `PLAYABLE`
 
 ~~~
-[(STEPS) (STEPS) (STEPS) ...] [(KEY) (KEY) (KEY) ...]
+Playable {semitones = (SEMITONE_LIST) keys = [(INT) (INT) (INT) ...]}
+~~~
+
+### `SEMITONE_LIST`
+
+~~~
+[(INT) (INT) (INT) ...]
 ~~~
 
 Each
@@ -268,5 +277,5 @@ MIDI {source = (FILE_PATH) destination = (FILE_PATH)}
 ### Keyboard reduction
 
 ~~~
-Keyboard {playables = (FILE_PATH) source = (FILE_PATH) header = (HEADER) midi_instrument = 0 destination = (FILE_PATH)}
+Keyboard {playablility = (FILE_PATH) source = (FILE_PATH) header = (HEADER) midi_instrument = 0 destination = (FILE_PATH)}
 ~~~

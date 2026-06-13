@@ -18,10 +18,12 @@ module Composition.Errors (Error (..), Is_out_of_range_type (..)) where
     File_error File_error |
     Initial_position_is_out_of_range |
     Invalid_character_in_text |
+    Invalid_keyword_playability String Location |
     Invalid_note_length Int Location |
     Invalid_note_name Natural_note_name Accidental Location |
     Invalid_time_numerator_factor Int Location |
-    Invalid_word String (Maybe Location) |
+    Invalid_word_command String |
+    Invalid_word_score String Location |
     Is_out_of_range_with_location Is_out_of_range_type Location |
     Is_out_of_range_without_location Is_out_of_range_type |
     Key_is_out_of_range Int Location |
@@ -32,7 +34,7 @@ module Composition.Errors (Error (..), Is_out_of_range_type (..)) where
     Note_is_out_of_range_for_MIDI (Note Pitched) |
     Note_length_denominator_contains_factors_other_than_2_and_3 |
     Parse_error_command |
-    Parse_error_playables Location |
+    Parse_error_playability Location |
     Parse_error_score Location |
     Track_ends_with_an_incomplete_triplet |
     Track_length_mismatch |

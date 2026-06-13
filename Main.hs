@@ -1,8 +1,8 @@
 module Main (main) where
   import Composition.Errors
+  import Composition.Keyboard
   import Composition.Lilypond
   import Composition.MIDI
-  import Composition.Keyboard
   import Composition.Parser
   import Composition.Score
   import Composition.Write
@@ -33,7 +33,7 @@ module Main (main) where
     Zero_char
   data Command =
     Keyboard_command {
-      playables :: File_path,
+      playability :: File_path,
       source :: File_path,
       header :: Map Header_field String,
       midi_instrument :: MIDI_instrument,
@@ -54,7 +54,7 @@ module Main (main) where
     MIDI_instrument_token |
     MIDI_token |
     Nat_token Int |
-    Playables_token |
+    Playability_token |
     Right_curly_bracket_token |
     Right_square_bracket_token |
     Source_token |
@@ -85,7 +85,7 @@ module Main (main) where
   construct_word :: String -> Either (Location -> Error) Token
   construct_word word =
     (case construct_header_field <|> construct_keyword of
-      Nothing -> Left (\ _ -> Invalid_word word Nothing)
+      Nothing -> Left (\ _ -> Invalid_word_command word)
       Just token -> Right token) where
     construct_header_field :: Maybe Token
     construct_header_field = Header_field_token <$> readMaybe word
@@ -98,7 +98,7 @@ module Main (main) where
         "destination" -> Just Destination_token
         "header" -> Just Header_token
         "midi_instrument" -> Just MIDI_instrument_token
-        "playables" -> Just Playables_token
+        "playability" -> Just Playability_token
         "source" -> Just Source_token
         _ -> Nothing
   convert_midi_instrument :: Int -> Either (Location -> Error) MIDI_instrument
@@ -150,11 +150,11 @@ module Main (main) where
     (do
       command' <- except parse_command
       case command' of
-        Keyboard_command {playables = playables_file_path, source, header, midi_instrument, destination} ->
+        Keyboard_command {playability = playability_file_path, source, header, midi_instrument, destination} ->
           do
-            playables <- parse_playables playables_file_path
+            playability <- parse_playability playability_file_path
             original_score <- parse source
-            keyboard_score <- except (reduction playables header midi_instrument original_score)
+            keyboard_score <- except (reduction playability header midi_instrument original_score)
             write destination keyboard_score
         Lilypond_command {source, destination} ->
           do
@@ -213,12 +213,12 @@ module Main (main) where
     parse_struct
       Keyboard_token
       (do
-        playables <- parse_field Playables_token (parse_file_path "key")
+        playability <- parse_field Playability_token (parse_file_path "key")
         source <- parse_field Source_token (parse_file_path "aoi")
         header <- parse_field Header_token parse_header
         midi_instrument <- parse_field MIDI_instrument_token parse_midi_instrument
         destination <- parse_field Destination_token (parse_file_path "aoi")
-        return (Keyboard_command {playables, source, header, midi_instrument, destination}))
+        return (Keyboard_command {playability, source, header, midi_instrument, destination}))
   parse_lilypond :: Parser Command
   parse_lilypond =
     parse_struct
@@ -319,6 +319,8 @@ module Main (main) where
       Initial_position_is_out_of_range -> "Initial position is out of range."
       Key_is_out_of_range key location -> "Key" <-> show key <-> "at" <-> write_location location <-> "is out of range."
       Invalid_character_in_text -> "Invalid character in text."
+      Invalid_keyword_playability keyword location ->
+        "Invalid keyword" <-> keyword <-> "in the playability file" <-> write_location location <> "."
       Invalid_note_length len location -> "Invalid note length" <-> show len <-> "at" <-> write_location location <> "."
       Invalid_note_name natural_note_name accidental location ->
         (
@@ -330,7 +332,8 @@ module Main (main) where
           ".")
       Invalid_time_numerator_factor time_numerator_factor location ->
         "Invalid time numerator factor" <-> show time_numerator_factor <-> "at" <-> write_location location <> "."
-      Invalid_word word location -> "Invalid word" <-> word <-> write_maybe_location location <> "."
+      Invalid_word_command word -> "Invalid word" <-> word <-> "in the command."
+      Invalid_word_score word location -> "Invalid word" <-> word <-> "in the score" <-> write_location location <> "."
       Is_out_of_range_with_location typ location ->
         write_is_out_of_range_type typ <-> "at" <-> write_location location <-> "is out of range."
       Is_out_of_range_without_location typ -> write_is_out_of_range_type typ <-> "is out of range."
@@ -345,7 +348,7 @@ module Main (main) where
       Note_length_denominator_contains_factors_other_than_2_and_3 ->
         "Note length denominator contains factors other than 2 and 3."
       Parse_error_command -> "Parse error in the command."
-      Parse_error_playables location -> "Parse error in the playables file at" <-> write_location location <> "."
+      Parse_error_playability location -> "Parse error in the playability file at" <-> write_location location <> "."
       Parse_error_score location -> "Parse error in the score at" <-> write_location location <> "."
       Track_ends_with_an_incomplete_triplet -> "Track ends with an incomplete triplet."
       Track_length_mismatch -> "Track length mismatch."
